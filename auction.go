@@ -1,3 +1,9 @@
+// Package auction implements a computerized auction system where sellers can
+// offer items for sale and buyers can place competing bids. The package
+// provides mechanisms to start an auction, place bids, and determine the
+// winner based on the highest bid. It ensures that bids do not exceed
+// maximum limits set by bidders and that each bid is incremented properly
+// according to predefined rules.
 package auction
 
 import (
