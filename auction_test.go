@@ -1,4 +1,4 @@
-package dispatchbidder
+package auction
 
 import (
 	"testing"
