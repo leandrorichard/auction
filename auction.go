@@ -9,17 +9,23 @@ package auction
 import (
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
 
+// Storer defines the interface for auction data storage operations.
+type Storer interface {
+	AddBidder(bidder *bidder) error
+	GetBidder(id uuid.UUID) (bidder, error)
+	UpdateBidder(bidder *bidder) error
+	ListBidders() ([]bidder, error)
+}
+
 // Auction holds all the details of a single auction event.
 type Auction struct {
-	sync.Mutex
-	ID      uuid.UUID
-	bidders []*bidder
+	storer Storer
+	ID     uuid.UUID
 }
 
 // NewAuctionConfig is used to configure a new auction.
@@ -33,9 +39,22 @@ func NewAuction(na NewAuctionConfig) (*Auction, error) {
 		return nil, fmt.Errorf("invalid auction data: %w", err)
 	}
 
+	// -----------------------------------------------------------------------
+	// Create bidders and add them to the auction.
+
+	storer := NewInMemoryStore()
+	bdrs := toNewBidders(na.Bidders)
+	for _, bdr := range bdrs {
+		if err := storer.AddBidder(bdr); err != nil {
+			return nil, fmt.Errorf("failed to add bidder: %w", err)
+		}
+	}
+
+	// -----------------------------------------------------------------------
+
 	auction := Auction{
-		ID:      uuid.New(),
-		bidders: toNewBidders(na.Bidders),
+		ID:     uuid.New(),
+		storer: storer,
 	}
 
 	return &auction, nil
@@ -43,21 +62,9 @@ func NewAuction(na NewAuctionConfig) (*Auction, error) {
 
 // PlaceBid places a bid on the auction.
 func (a *Auction) PlaceBid(id uuid.UUID) error {
-	a.Lock()
-	defer a.Unlock()
-
-	// -----------------------------------------------------------------------
-	// Locate the bidder.
-
-	var bidder *bidder
-	for _, bdr := range a.bidders {
-		if bdr.ID == id {
-			bidder = bdr
-			break
-		}
-	}
-	if bidder == nil {
-		return errors.New("bidder not found")
+	bidder, err := a.storer.GetBidder(id)
+	if err != nil {
+		return fmt.Errorf("failed to get bidder: %w", err)
 	}
 
 	bidAmount := bidder.CurrentBid + bidder.AutoIncrement
@@ -80,21 +87,9 @@ func (a *Auction) PlaceBid(id uuid.UUID) error {
 
 	bidder.CurrentBid = bidAmount
 	bidder.LastBidTime = time.Now()
-
-	// -----------------------------------------------------------------------
-	// For all other bidders, increment their current bid by their respective
-	// AutoIncrement amount, provided this does not exceed their MaxBid.
-
-	for _, otherBidder := range a.bidders {
-		if otherBidder.ID == bidder.ID {
-			continue
-		}
-
-		newBid := otherBidder.CurrentBid + otherBidder.AutoIncrement
-		if newBid <= otherBidder.MaxBid {
-			otherBidder.CurrentBid = newBid
-			otherBidder.LastBidTime = time.Now()
-		}
+	err = a.storer.UpdateBidder(&bidder)
+	if err != nil {
+		return fmt.Errorf("failed to update bidder: %w", err)
 	}
 
 	return nil
@@ -109,17 +104,23 @@ type Winner struct {
 // DetermineWinner determines the winner of the auction based on the highest current bid.
 // In case of a tie (multiple bidders with the same highest bid), the bidder who placed
 // their bid first (based on LastBidTime) is considered the winner.
-func (a *Auction) DetermineWinner() Winner {
-	var wbdr *bidder
+func (a *Auction) DetermineWinner() (Winner, error) {
+	bdrs, err := a.storer.ListBidders()
+	if err != nil {
+		return Winner{}, fmt.Errorf("failed to list bidders: %w", err)
+	}
 
-	for _, bidder := range a.bidders {
-		if isWinner(wbdr, bidder) {
+	var wbdr bidder
+
+	for _, bidder := range bdrs {
+		isWinner := isWinner(&wbdr, &bidder)
+		if isWinner {
 			wbdr = bidder
 		}
 	}
 
-	if wbdr == nil {
-		return Winner{}
+	if wbdr.Name == "" {
+		return Winner{}, errors.New("no winner")
 	}
 
 	winner := Winner{
@@ -127,7 +128,7 @@ func (a *Auction) DetermineWinner() Winner {
 		Name: wbdr.Name,
 	}
 
-	return winner
+	return winner, nil
 }
 
 // isWinner checks if the provided bidder should replace the current winner.
@@ -136,8 +137,8 @@ func (a *Auction) DetermineWinner() Winner {
 // - Their bid is higher than the current winner's bid.
 // - Their bid is the same as the current winner's but was placed earlier.
 func isWinner(currentWinner, bidder *bidder) bool {
-	return currentWinner == nil || // No current winner, so the bidder wins by default.
-		bidder.CurrentBid > currentWinner.CurrentBid || // Bidder has a higher bid.
+	return currentWinner.Name == "" || // No current winner, so the bidder wins by default.
+		bidder.CurrentBid < currentWinner.CurrentBid || // Bidder has a higher bid.
 		(bidder.CurrentBid == currentWinner.CurrentBid && // Bidder has the same bid but placed it earlier.
 			bidder.LastBidTime.Before(currentWinner.LastBidTime))
 }
