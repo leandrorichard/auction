@@ -15,27 +15,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// Bidder represents an individual participant in an auction.
-type Bidder struct {
-	ID            uuid.UUID
-	Name          string
-	StartingBid   float64
-	MaxBid        float64
-	CurrentBid    float64
-	AutoIncrement float64
-	LastBidTime   time.Time
-}
-
 // Auction holds all the details of a single auction event.
 type Auction struct {
-	sync.RWMutex
+	sync.Mutex
 	ID      uuid.UUID
-	Bidders []*Bidder
+	bidders []*bidder
 }
 
 // NewAuctionConfig is used to configure a new auction.
 type NewAuctionConfig struct {
-	Bidders []*Bidder
+	Bidders []NewBidder
 }
 
 // NewAuction creates a new auction instance from the given parameters.
@@ -46,16 +35,32 @@ func NewAuction(na NewAuctionConfig) (*Auction, error) {
 
 	auction := Auction{
 		ID:      uuid.New(),
-		Bidders: na.Bidders,
+		bidders: toNewBidders(na.Bidders),
 	}
 
 	return &auction, nil
 }
 
 // PlaceBid places a bid on the auction.
-func (a *Auction) PlaceBid(bidder *Bidder, bidAmount float64) error {
+func (a *Auction) PlaceBid(id uuid.UUID) error {
 	a.Lock()
 	defer a.Unlock()
+
+	// -----------------------------------------------------------------------
+	// Locate the bidder.
+
+	var bidder *bidder
+	for _, bdr := range a.bidders {
+		if bdr.ID == id {
+			bidder = bdr
+			break
+		}
+	}
+	if bidder == nil {
+		return errors.New("bidder not found")
+	}
+
+	bidAmount := bidder.CurrentBid + bidder.AutoIncrement
 
 	// -----------------------------------------------------------------------
 	// Perform validations.
@@ -64,7 +69,7 @@ func (a *Auction) PlaceBid(bidder *Bidder, bidAmount float64) error {
 		return fmt.Errorf("bid amount $%.2f is less than starting bid $%.2f", bidAmount, bidder.StartingBid)
 	}
 	if bidAmount > bidder.MaxBid {
-		return fmt.Errorf("bid amount $%.2f is greater than max bid $%.2f", bidAmount, bidder.MaxBid)
+		return fmt.Errorf("%w: bid amount $%.2f is greater than max bid $%.2f", ErrExceededMaxBid, bidAmount, bidder.MaxBid)
 	}
 	if bidAmount <= bidder.CurrentBid {
 		return fmt.Errorf("bid amount $%.2f is less than or equal to current bid $%.2f", bidAmount, bidder.CurrentBid)
@@ -80,29 +85,46 @@ func (a *Auction) PlaceBid(bidder *Bidder, bidAmount float64) error {
 	// For all other bidders, increment their current bid by their respective
 	// AutoIncrement amount, provided this does not exceed their MaxBid.
 
-	for _, otherBidder := range a.Bidders {
-		if otherBidder.ID != bidder.ID {
-			newBid := otherBidder.CurrentBid + otherBidder.AutoIncrement
-			if newBid <= otherBidder.MaxBid {
-				otherBidder.CurrentBid = newBid
-				otherBidder.LastBidTime = time.Now()
-			}
+	for _, otherBidder := range a.bidders {
+		if otherBidder.ID == bidder.ID {
+			continue
+		}
+
+		newBid := otherBidder.CurrentBid + otherBidder.AutoIncrement
+		if newBid <= otherBidder.MaxBid {
+			otherBidder.CurrentBid = newBid
+			otherBidder.LastBidTime = time.Now()
 		}
 	}
 
 	return nil
 }
 
+// Winner represents the winner of the auction.
+type Winner struct {
+	ID   uuid.UUID
+	Name string
+}
+
 // DetermineWinner determines the winner of the auction based on the highest current bid.
 // In case of a tie (multiple bidders with the same highest bid), the bidder who placed
 // their bid first (based on LastBidTime) is considered the winner.
-func (a *Auction) DetermineWinner() *Bidder {
-	var winner *Bidder
+func (a *Auction) DetermineWinner() Winner {
+	var wbdr *bidder
 
-	for _, bidder := range a.Bidders {
-		if isWinner(winner, bidder) {
-			winner = bidder
+	for _, bidder := range a.bidders {
+		if isWinner(wbdr, bidder) {
+			wbdr = bidder
 		}
+	}
+
+	if wbdr == nil {
+		return Winner{}
+	}
+
+	winner := Winner{
+		ID:   wbdr.ID,
+		Name: wbdr.Name,
 	}
 
 	return winner
@@ -113,7 +135,7 @@ func (a *Auction) DetermineWinner() *Bidder {
 // - There is no current winner.
 // - Their bid is higher than the current winner's bid.
 // - Their bid is the same as the current winner's but was placed earlier.
-func isWinner(currentWinner, bidder *Bidder) bool {
+func isWinner(currentWinner, bidder *bidder) bool {
 	return currentWinner == nil || // No current winner, so the bidder wins by default.
 		bidder.CurrentBid > currentWinner.CurrentBid || // Bidder has a higher bid.
 		(bidder.CurrentBid == currentWinner.CurrentBid && // Bidder has the same bid but placed it earlier.
@@ -139,7 +161,7 @@ func validateAuctionData(na NewAuctionConfig) error {
 		// -----------------------------------------------------------------------
 		// Validate individual bidder data.
 
-		if err := validateBidder(bidder); err != nil {
+		if err := validateBidder(&bidder); err != nil {
 			return fmt.Errorf("invalid bidder data for bidder ID %s: %w", bidder.ID, err)
 		}
 	}
@@ -147,7 +169,7 @@ func validateAuctionData(na NewAuctionConfig) error {
 }
 
 // validateBidder checks that a bidder's data is valid.
-func validateBidder(b *Bidder) error {
+func validateBidder(b *NewBidder) error {
 	if b.StartingBid <= 0 {
 		return fmt.Errorf("starting bid must be positive, got $%.2f", b.StartingBid)
 	}
