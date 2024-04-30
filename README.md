@@ -23,7 +23,7 @@ import (
 )
 
 func main() {
-    bidders := []*auction.Bidder{
+    bidders := []auction.NewBidder{
         {
             ID: uuid.New(),
             Name: "John Doe",
@@ -48,7 +48,7 @@ func main() {
     }
     
     // Bidding
-    err = auction.PlaceBid(bidders[0], 55)
+    err = auction.PlaceBid(bidders[0].ID)
     if err != nil {
         fmt.Println("error placing bid:", err)
     }
