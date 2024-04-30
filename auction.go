@@ -134,11 +134,11 @@ func (a *Auction) DetermineWinner() (Winner, error) {
 // isWinner checks if the provided bidder should replace the current winner.
 // A bidder becomes the new winner if:
 // - There is no current winner.
-// - Their bid is higher than the current winner's bid.
+// - Their bid is lower than the current winner's bid.
 // - Their bid is the same as the current winner's but was placed earlier.
 func isWinner(currentWinner, bidder *bidder) bool {
 	return currentWinner.Name == "" || // No current winner, so the bidder wins by default.
-		bidder.CurrentBid < currentWinner.CurrentBid || // Bidder has a higher bid.
+		bidder.CurrentBid < currentWinner.CurrentBid || // Bidder has a lower bid.
 		(bidder.CurrentBid == currentWinner.CurrentBid && // Bidder has the same bid but placed it earlier.
 			bidder.LastBidTime.Before(currentWinner.LastBidTime))
 }
